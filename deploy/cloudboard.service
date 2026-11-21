@@ -1,0 +1,36 @@
+# Copy to: /etc/systemd/system/cloudboard.service
+# Then run: sudo systemctl daemon-reload && sudo systemctl enable --now cloudboard
+
+[Unit]
+Description=CloudBoard Node.js Web Application (3-Tier AWS HA)
+Documentation=https://github.com/
+After=network-online.target remote-fs.target
+Wants=network-online.target remote-fs.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/var/www/cloudboard
+EnvironmentFile=/var/www/cloudboard/.env
+ExecStart=/usr/bin/node /var/www/cloudboard/server.js
+
+# Automatic recovery on crash
+Restart=always
+RestartSec=5
+
+# Protect 1 GiB RAM t3.micro instances from runaway memory usage
+MemoryMax=512M
+Environment=NODE_OPTIONS=--max-old-space-size=384
+
+# Basic systemd hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Journald logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloudboard
+
+[Install]
+WantedBy=multi-user.target

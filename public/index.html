@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CloudBoard — Shared Notes &amp; File Hub</title>
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+    integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+    crossorigin="anonymous"
+  />
+  <style>
+    :root {
+      --cb-navy: #0f172a;
+      --cb-slate: #1e293b;
+      --cb-surface: #f8fafc;
+      --cb-border: #e2e8f0;
+    }
+
+    body {
+      background-color: var(--cb-surface);
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    .ha-banner {
+      background: linear-gradient(135deg, var(--cb-navy) 0%, var(--cb-slate) 100%);
+      color: #f8fafc;
+      border-bottom: 3px solid #38bdf8;
+    }
+
+    .meta-chip {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 0.5rem;
+      padding: 0.35rem 0.7rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .meta-label {
+      color: #94a3b8;
+      font-family: inherit;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .status-dot {
+      width: 0.55rem;
+      height: 0.55rem;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .note-card {
+      border: 1px solid var(--cb-border);
+      transition: box-shadow 0.15s ease, transform 0.15s ease;
+    }
+
+    .note-card:hover {
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+    }
+
+    .note-content {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .attachment-preview {
+      max-height: 220px;
+      max-width: 100%;
+      object-fit: contain;
+      border-radius: 0.375rem;
+      border: 1px solid var(--cb-border);
+      background-color: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <!-- Live High-Availability Header (IMDSv2) -->
+  <header class="ha-banner py-3 shadow-sm">
+    <div class="container">
+      <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
+        <div>
+          <div class="d-flex align-items-center gap-2">
+            <h1 class="h4 mb-0 fw-bold tracking-tight">CloudBoard</h1>
+            <span class="badge text-bg-info text-dark fw-semibold">3-Tier AWS HA</span>
+          </div>
+          <p class="mb-0 small text-secondary-emphasis" style="color: #cbd5e1 !important;">
+            Shared Notes &amp; File Hub &middot; ALB &rarr; EC2 ASG &rarr; EFS &rarr; Multi-AZ RDS
+          </p>
+        </div>
+
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <div class="meta-chip" title="EC2 Instance ID (IMDSv2)">
+            <span class="meta-label">Instance</span>
+            <strong id="meta-instance">loading...</strong>
+          </div>
+          <div class="meta-chip" title="AWS Availability Zone">
+            <span class="meta-label">AZ</span>
+            <span id="meta-az" class="badge text-bg-secondary">loading...</span>
+          </div>
+          <div class="meta-chip" title="EC2 Private IPv4">
+            <span class="meta-label">Private IP</span>
+            <strong id="meta-ip">loading...</strong>
+          </div>
+          <button
+            type="button"
+            id="refresh-btn"
+            class="btn btn-sm btn-outline-light"
+            title="Refresh page to test ALB cross-AZ load balancing"
+          >
+            Refresh Node
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Tier Diagnostics Pills -->
+      <div class="d-flex flex-wrap align-items-center gap-2 mt-3 pt-2 border-top border-secondary border-opacity-25">
+        <span class="small text-uppercase fw-semibold" style="color: #94a3b8; font-size: 0.72rem; letter-spacing: 0.05em;">
+          Tier Diagnostics:
+        </span>
+        <span id="pill-db" class="badge rounded-pill text-bg-secondary d-inline-flex align-items-center gap-1 px-3 py-2">
+          <span class="status-dot bg-light"></span>
+          RDS PostgreSQL: Checking...
+        </span>
+        <span id="pill-efs" class="badge rounded-pill text-bg-secondary d-inline-flex align-items-center gap-1 px-3 py-2">
+          <span class="status-dot bg-light"></span>
+          Amazon EFS: Checking...
+        </span>
+        <span id="status-updated" class="ms-auto small" style="color: #94a3b8;"></span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container py-4">
+    <div id="alert-box" class="alert d-none" role="alert"></div>
+
+    <div class="row g-4">
+      <!-- Create Note Form -->
+      <div class="col-lg-4">
+        <div class="card shadow-sm border-0">
+          <div class="card-header bg-white border-bottom py-3">
+            <h2 class="h6 mb-0 fw-bold">Post a Shared Note</h2>
+          </div>
+          <div class="card-body">
+            <form id="note-form" novalidate>
+              <div class="mb-3">
+                <label for="note-title" class="form-label fw-semibold small">
+                  Title <span class="text-danger">*</span>
+                </label>
+                <input
+                  type="text"
+                  id="note-title"
+                  name="title"
+                  class="form-control"
+                  maxlength="120"
+                  placeholder="e.g., Deployment Runbook"
+                  required
+                />
+                <div class="form-text d-flex justify-content-between">
+                  <span>Stored in Multi-AZ RDS</span>
+                  <span id="title-counter">0 / 120</span>
+                </div>
+              </div>
+
+              <div class="mb-3">
+                <label for="note-content" class="form-label fw-semibold small">
+                  Content <span class="text-danger">*</span>
+                </label>
+                <textarea
+                  id="note-content"
+                  name="content"
+                  class="form-control"
+                  rows="5"
+                  placeholder="Write a note visible across all EC2 instances..."
+                  required
+                ></textarea>
+              </div>
+
+              <div class="mb-3">
+                <label for="note-attachment" class="form-label fw-semibold small">
+                  Attachment <span class="text-muted fw-normal">(optional, max 5 MB)</span>
+                </label>
+                <input
+                  type="file"
+                  id="note-attachment"
+                  name="attachment"
+                  class="form-control form-control-sm"
+                />
+                <div class="form-text">
+                  Saved to shared Amazon EFS and served at <code>/uploads</code>.
+                </div>
+              </div>
+
+              <button type="submit" id="submit-btn" class="btn btn-primary w-100 fw-semibold">
+                Publish Note
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <!-- Shared Notes Feed -->
+      <div class="col-lg-8">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h2 class="h5 mb-0 fw-bold">
+            Shared Notes Feed
+            <span id="notes-count" class="badge text-bg-light border text-dark ms-1">0</span>
+          </h2>
+          <button type="button" id="reload-notes-btn" class="btn btn-sm btn-outline-secondary">
+            Reload Feed
+          </button>
+        </div>
+
+        <div id="notes-list" class="d-flex flex-column gap-3">
+          <div class="card border-0 shadow-sm">
+            <div class="card-body text-center text-muted py-5">
+              Loading notes...
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const MAX_FILE_SIZE = 5 * 1024 * 1024;
+      const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+
+      const els = {
+        metaInstance: document.getElementById('meta-instance'),
+        metaAz: document.getElementById('meta-az'),
+        metaIp: document.getElementById('meta-ip'),
+        pillDb: document.getElementById('pill-db'),
+        pillEfs: document.getElementById('pill-efs'),
+        statusUpdated: document.getElementById('status-updated'),
+        refreshBtn: document.getElementById('refresh-btn'),
+        reloadNotesBtn: document.getElementById('reload-notes-btn'),
+        alertBox: document.getElementById('alert-box'),
+        noteForm: document.getElementById('note-form'),
+        noteTitle: document.getElementById('note-title'),
+        noteContent: document.getElementById('note-content'),
+        noteAttachment: document.getElementById('note-attachment'),
+        titleCounter: document.getElementById('title-counter'),
+        submitBtn: document.getElementById('submit-btn'),
+        notesCount: document.getElementById('notes-count'),
+        notesList: document.getElementById('notes-list'),
+      };
+
+      // Strict HTML escaping to prevent XSS
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function azBadgeClass(az) {
+        if (!az || az === 'local-dev') return 'text-bg-secondary';
+        const suffix = az.slice(-1).toLowerCase();
+        if (suffix === 'a') return 'text-bg-primary';
+        if (suffix === 'b') return 'text-bg-success';
+        if (suffix === 'c') return 'text-bg-warning text-dark';
+        return 'text-bg-info text-dark';
+      }
+
+      function isImageFile(filename) {
+        const dotIdx = filename.lastIndexOf('.');
+        if (dotIdx === -1) return false;
+        return IMAGE_EXTENSIONS.has(filename.slice(dotIdx).toLowerCase());
+      }
+
+      function formatDate(isoString) {
+        if (!isoString) return '';
+        const date = new Date(isoString);
+        if (Number.isNaN(date.getTime())) return '';
+        return date.toLocaleString();
+      }
+
+      function showAlert(message, type = 'danger') {
+        els.alertBox.className = `alert alert-${type}`;
+        els.alertBox.textContent = message;
+        els.alertBox.classList.remove('d-none');
+      }
+
+      function clearAlert() {
+        els.alertBox.classList.add('d-none');
+        els.alertBox.textContent = '';
+      }
+
+      function updateStatusPill(el, label, ok, okText, errText) {
+        el.className = `badge rounded-pill d-inline-flex align-items-center gap-1 px-3 py-2 ${
+          ok ? 'text-bg-success' : 'text-bg-danger'
+        }`;
+        el.innerHTML = `<span class="status-dot bg-white"></span> ${escapeHtml(label)}: ${escapeHtml(
+          ok ? okText : errText
+        )}`;
+      }
+
+      async function loadStatus() {
+        try {
+          const res = await fetch('/api/status', { cache: 'no-store' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+
+          els.metaInstance.textContent = data.instanceId || 'unknown';
+          els.metaAz.textContent = data.availabilityZone || 'unknown';
+          els.metaAz.className = `badge ${azBadgeClass(data.availabilityZone)}`;
+          els.metaIp.textContent = data.privateIp || 'unknown';
+
+          updateStatusPill(
+            els.pillDb,
+            'RDS PostgreSQL',
+            data.database === 'connected',
+            'Connected',
+            'Error'
+          );
+          updateStatusPill(
+            els.pillEfs,
+            'Amazon EFS',
+            data.efs === 'writable',
+            'Writable',
+            'Error'
+          );
+
+          els.statusUpdated.textContent = `Checked ${formatDate(data.timestamp)}`;
+        } catch (_err) {
+          els.metaInstance.textContent = 'unreachable';
+          els.metaAz.textContent = 'error';
+          els.metaAz.className = 'badge text-bg-danger';
+          els.metaIp.textContent = 'error';
+          updateStatusPill(els.pillDb, 'RDS PostgreSQL', false, 'Connected', 'Unreachable');
+          updateStatusPill(els.pillEfs, 'Amazon EFS', false, 'Writable', 'Unreachable');
+        }
+      }
+
+      function renderNotes(notes) {
+        els.notesCount.textContent = String(notes.length);
+
+        if (notes.length === 0) {
+          els.notesList.innerHTML = `
+            <div class="card border-0 shadow-sm">
+              <div class="card-body text-center text-muted py-5">
+                No notes yet. Post the first shared note on the left!
+              </div>
+            </div>`;
+          return;
+        }
+
+        els.notesList.innerHTML = notes
+          .map((note) => {
+            const safeTitle = escapeHtml(note.title);
+            const safeContent = escapeHtml(note.content);
+            const safeAz = escapeHtml(note.created_by_az || 'unknown');
+            const safeDate = escapeHtml(formatDate(note.created_at));
+            const safeId = Number(note.id);
+
+            let attachmentHtml = '';
+            if (note.attachment_name) {
+              const encodedFile = encodeURIComponent(note.attachment_name);
+              const fileUrl = `/uploads/${encodedFile}`;
+              const safeFilename = escapeHtml(note.attachment_name);
+
+              if (isImageFile(note.attachment_name)) {
+                attachmentHtml = `
+                  <div class="mt-3 pt-2 border-top">
+                    <a href="${fileUrl}" target="_blank" rel="noopener noreferrer" class="d-inline-block">
+                      <img src="${fileUrl}" alt="${safeFilename}" class="attachment-preview" loading="lazy" />
+                    </a>
+                    <div class="small text-muted mt-1">
+                      <a href="${fileUrl}" target="_blank" rel="noopener noreferrer">${safeFilename}</a>
+                    </div>
+                  </div>`;
+              } else {
+                attachmentHtml = `
+                  <div class="mt-3 pt-2 border-top">
+                    <a href="${fileUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-primary">
+                      Download Attachment: ${safeFilename}
+                    </a>
+                  </div>`;
+              }
+            }
+
+            return `
+              <article class="card note-card shadow-sm bg-white" data-note-id="${safeId}">
+                <div class="card-body">
+                  <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                    <div>
+                      <h3 class="h6 fw-bold mb-1">${safeTitle}</h3>
+                      <div class="d-flex flex-wrap align-items-center gap-2 small text-muted">
+                        <span class="badge ${azBadgeClass(note.created_by_az)}">AZ: ${safeAz}</span>
+                        <span>${safeDate}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      class="btn btn-sm btn-outline-danger delete-note-btn"
+                      data-id="${safeId}"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  <p class="card-text note-content mb-0 mt-2">${safeContent}</p>
+                  ${attachmentHtml}
+                </div>
+              </article>`;
+          })
+          .join('');
+      }
+
+      async function loadNotes() {
+        try {
+          const res = await fetch('/api/notes', { cache: 'no-store' });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || `HTTP ${res.status}`);
+          }
+          renderNotes(Array.isArray(data.notes) ? data.notes : []);
+        } catch (err) {
+          els.notesList.innerHTML = `
+            <div class="alert alert-warning mb-0">
+              Unable to load notes: ${escapeHtml(err.message)}
+            </div>`;
+        }
+      }
+
+      els.noteTitle.addEventListener('input', () => {
+        els.titleCounter.textContent = `${els.noteTitle.value.length} / 120`;
+      });
+
+      els.noteForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        clearAlert();
+
+        const title = els.noteTitle.value.trim();
+        const content = els.noteContent.value.trim();
+        const file = els.noteAttachment.files[0];
+
+        if (!title || !content) {
+          showAlert('Please enter both a title and content.', 'warning');
+          return;
+        }
+
+        if (file && file.size > MAX_FILE_SIZE) {
+          showAlert('Selected file exceeds the 5 MB limit.', 'warning');
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append('title', title);
+        formData.append('content', content);
+        if (file) {
+          formData.append('attachment', file);
+        }
+
+        els.submitBtn.disabled = true;
+        els.submitBtn.textContent = 'Publishing...';
+
+        try {
+          const res = await fetch('/api/notes', {
+            method: 'POST',
+            body: formData,
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || 'Failed to create note.');
+          }
+
+          els.noteForm.reset();
+          els.titleCounter.textContent = '0 / 120';
+          showAlert('Note published successfully.', 'success');
+          await Promise.all([loadNotes(), loadStatus()]);
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        } finally {
+          els.submitBtn.disabled = false;
+          els.submitBtn.textContent = 'Publish Note';
+        }
+      });
+
+      els.notesList.addEventListener('click', async (event) => {
+        const btn = event.target.closest('.delete-note-btn');
+        if (!btn) return;
+
+        const id = btn.getAttribute('data-id');
+        if (!id || !window.confirm('Delete this note and its attachment?')) return;
+
+        clearAlert();
+        btn.disabled = true;
+        btn.textContent = 'Deleting...';
+
+        try {
+          const res = await fetch(`/api/notes/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || 'Failed to delete note.');
+          }
+          await loadNotes();
+        } catch (err) {
+          showAlert(err.message, 'danger');
+          btn.disabled = false;
+          btn.textContent = 'Delete';
+        }
+      });
+
+      els.refreshBtn.addEventListener('click', () => window.location.reload());
+      els.reloadNotesBtn.addEventListener('click', () => {
+        loadStatus();
+        loadNotes();
+      });
+
+      // Initial load
+      loadStatus();
+      loadNotes();
+    })();
+  </script>
+</body>
+</html>
